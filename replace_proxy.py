@@ -1,102 +1,53 @@
 import requests
-import os
 import socket
 import time
 
-# Konfigurasi API CoolProxies
-API_KEY = "YOURAPIKEY"  # Ganti dengan API Key kamu
-API_URL = f"https://api.coolproxies.com/api.php?list=1&apikey={API_KEY}&http=1&limit=100"
+API_KEY = "YOURAPIKEY"
+API_URL = f"https://api.coolproxies.com/api.php?list=1&apikey={API_KEY}&http=1"
 
-# Path file konfigurasi
-PROXY_FILE = "/etc/haproxy/proxy_list.txt"
-HAPROXY_CONFIG = "/etc/haproxy/haproxy.cfg"
+PROXY_LIST_FILE = "/etc/haproxy/proxy_list.txt"
+TIMEOUT = 5  # Waktu maksimal pengecekan proxy
 
-# Fungsi untuk mengecek apakah proxy bisa digunakan
 def test_proxy(proxy):
-    ip, port = proxy.split(":")
     try:
-        sock = socket.create_connection((ip, int(port)), timeout=3)
-        sock.close()
-        return True
-    except (socket.timeout, socket.error):
+        ip, port = proxy.split(":")
+        with socket.create_connection((ip, int(port)), timeout=TIMEOUT):
+            return True
+    except:
         return False
 
-# Fungsi untuk mengambil proxy baru dari API
-def fetch_proxies():
+def get_new_proxies():
     try:
-        response = requests.get(API_URL, timeout=10)
+        response = requests.get(API_URL)
         if response.status_code == 200:
-            return response.text.splitlines()
+            proxies = response.text.split("\n")
+            return [p.strip() for p in proxies if p.strip()]
+    except Exception as e:
+        print(f"Error fetching new proxies: {e}")
+    return []
+
+def replace_dead_proxies():
+    with open(PROXY_LIST_FILE, "r") as f:
+        old_proxies = [line.strip() for line in f.readlines()]
+
+    new_proxies = get_new_proxies()
+    working_proxies = []
+
+    for proxy in old_proxies:
+        if test_proxy(proxy):
+            working_proxies.append(proxy)
         else:
-            print("❌ Gagal mengambil proxy dari API!")
-            return []
-    except requests.RequestException as e:
-        print(f"❌ Error mengambil proxy: {e}")
-        return []
+            print(f"❌ Proxy mati: {proxy}")
+            if new_proxies:
+                new_proxy = new_proxies.pop(0)
+                print(f"🔄 Mengganti dengan proxy baru: {new_proxy}")
+                working_proxies.append(new_proxy)
 
-# Load daftar proxy yang ada
-print("📡 Mengecek proxy yang tersimpan...")
-with open(PROXY_FILE, "r") as f:
-    saved_proxies = f.read().splitlines()
+    with open(PROXY_LIST_FILE, "w") as f:
+        for proxy in working_proxies:
+            f.write(proxy + "\n")
 
-# Periksa proxy yang masih aktif
-active_proxies = []
-dead_proxies = []
+    print(f"✅ Proxy list diperbarui ({len(working_proxies)} aktif)")
 
-for proxy in saved_proxies:
-    if test_proxy(proxy):
-        active_proxies.append(proxy)
-        print(f"✅ Proxy Aktif: {proxy}")
-    else:
-        dead_proxies.append(proxy)
-        print(f"❌ Proxy Mati: {proxy}")
-
-# Jika ada proxy yang mati, ambil yang baru
-if dead_proxies:
-    print("🔄 Mengambil proxy baru untuk menggantikan yang mati...")
-    new_proxies = fetch_proxies()
-
-    # Pastikan jumlah proxy tetap sama dengan sebelumnya
-    while len(active_proxies) < len(saved_proxies) and new_proxies:
-        new_proxy = new_proxies.pop(0)
-        if test_proxy(new_proxy):
-            active_proxies.append(new_proxy)
-            print(f"🔄 Mengganti proxy dengan: {new_proxy}")
-
-    # Simpan daftar proxy baru
-    with open(PROXY_FILE, "w") as f:
-        f.write("\n".join(active_proxies))
-
-    print(f"✅ {len(active_proxies)} Proxy tersimpan di {PROXY_FILE}")
-
-    # Perbarui konfigurasi HAProxy
-    config = """\
-defaults
-    mode tcp
-    timeout connect 5s
-    timeout client 50s
-    timeout server 50s
-"""
-
-    for i, proxy in enumerate(active_proxies, start=3001):
-        ip, port = proxy.split(":")
-        config += f"""
-frontend proxy_{i}
-    bind *:{i}
-    default_backend proxy_{i}
-
-backend proxy_{i}
-    server proxy {ip}:{port} check
-"""
-
-    # Simpan konfigurasi baru ke HAProxy
-    with open(HAPROXY_CONFIG, "w") as f:
-        f.write(config)
-
-    # Restart HAProxy agar perubahan diterapkan
-    os.system("systemctl restart haproxy")
-    print("🚀 HAProxy diperbarui & di-restart!")
-
-else:
-    print("✅ Semua proxy masih aktif. Tidak ada perubahan.")
-
+if __name__ == "__main__":
+    replace_dead_proxies()
